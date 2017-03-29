@@ -1,0 +1,973 @@
+' v1.0
+' release of the source code. Tetris without any bells + whistles.
+ 
+' v1.1
+' Added scorekeeping & highscores. The game will display the last high score at the start.
+' If your score beats the highscore, it will be saved to the EEPROM as the new high score.
+ 
+ 
+Device = 18F4520
+Clock = 32
+Config MCLRE = Off
+ 
+Include "InternalOscillator.bas"
+Include "RandGen.bas"
+Include "Utils.bas"
+Include "EEPROM.bas"
+ 
+// PROGRAM DEFINES
+Dim ObjectData(8) As Word
+Dim tmpObjectData(8) As Word
+Dim BackgroundData(8) As Word
+ 
+Dim OriginX As Byte
+Dim OriginY As Byte    
+Dim LimitedRotation As Byte
+Dim CurrentRotation As Byte
+Dim NumberOfLines As Word
+ 
+Dim Left As PORTB.0
+Dim Right As PORTB.1          
+Dim Rotate As PORTB.2
+Dim Down As PORTB.3
+ 
+Dim Left_Delay As Byte
+Dim Right_Delay As Byte
+Dim Rotate_Delay As Byte
+Dim Down_Delay As Byte    
+Dim ButtonFlags As Byte    
+Dim Left_Debounce As ButtonFlags.0
+Dim Right_Debounce As ButtonFlags.1
+Dim Rotate_Debounce As ButtonFlags.2
+Dim Down_Debounce As ButtonFlags.3    
+ 
+Dim Flags As Byte
+Dim UpdateScreen As Flags.0
+Dim InterruptComplete As Flags.1
+Dim DropObject As Flags.2
+Dim EndOfGame As Flags.3
+Dim CheckForNewLines As Flags.4
+ 
+// used for random graphic selection
+Const NumberOfShapes = 7 
+Const RndWindow = 255/NumberOfShapes
+ 
+// terminology (I could have added more..)
+Const CW = 1
+Const CCW = 0
+ 
+// TMR2 variables
+Dim TMR2IE As PIE1.1,                // TMR2 interrupt enable
+           TMR2IF As PIR1.1,         // TMR2 overflow flag
+           TMR2ON As T2CON.2,        // Enables TMR2 to begin incrementing
+           mS As Word,               // mS register
+           CurrentX As Byte,
+           sWDT As Byte              // Software Watch Dog Timer for entering SLEEP mode
+ 
+Const mS_Inc = 2
+Const DebounceDelay = 10
+ 
+// Sleep mode registers
+Dim IDLEN As OSCCON.7,
+    SCS1 As OSCCON.1,
+    SCS0 As OSCCON.0    
+ 
+// SHAPES!    
+// Be sure to update "NumberOfShapes" if more are added (or some are removed)
+// ###
+//  #
+Const Graphic0(8) As Word = (%0000000000000000,%0000000000000000,%0000000000000000,%0000000000000001,%0000000000000011,%0000000000000001,%0000000000000000,%0000000000000000)
+Const Graphic0_X = 4
+Const Graphic0_Y = 0
+Const LimitedRotation0 = 0
+ 
+// ####
+Const Graphic1(8) As Word = (%0000000000000000,%0000000000000000,%0000000000000001,%0000000000000001,%0000000000000001,%0000000000000001,%0000000000000000,%0000000000000000)
+Const Graphic1_X = 4
+Const Graphic1_Y = 0
+Const Graphic_W = 1
+Const Graphic_H = 1
+Const LimitedRotation1 = 1
+ 
+// ###
+// #  
+Const Graphic2(8) As Word = (%0000000000000000,%0000000000000000,%0000000000000000,%0000000000000011,%0000000000000001,%0000000000000001,%0000000000000000,%0000000000000000)
+Const Graphic2_X = 4
+Const Graphic2_Y = 0
+Const LimitedRotation2 = 0
+ 
+// ###
+//   #
+Const Graphic3(8) As Word = (%0000000000000000,%0000000000000000,%0000000000000000,%0000000000000001,%0000000000000001,%0000000000000011,%0000000000000000,%0000000000000000)
+Const Graphic3_X = 4
+Const Graphic3_Y = 0
+Const LimitedRotation3 = 0
+ 
+// ##
+// ##
+Const Graphic4(8) As Word = (%0000000000000000,%0000000000000000,%0000000000000000,%0000000000000011,%0000000000000011,%0000000000000000,%0000000000000000,%0000000000000000)
+Const Graphic4_X = 3
+Const Graphic4_Y = 1
+Const LimitedRotation4 = 2
+ 
+//  ###
+// ###
+Const Graphic5(8) As Word = (%0000000000000000,%0000000000000000,%0000000000000000,%0000000000000010,%0000000000000011,%0000000000000001,%0000000000000000,%0000000000000000)
+Const Graphic5_X = 4
+Const Graphic5_Y = 1
+Const LimitedRotation5 = 1
+ 
+// ### 
+//  ###
+Const Graphic6(8) As Word = (%0000000000000000,%0000000000000000,%0000000000000000,%0000000000000001,%0000000000000011,%0000000000000010,%0000000000000000,%0000000000000000)
+Const Graphic6_X = 4
+Const Graphic6_Y = 1
+Const LimitedRotation6 = 1
+ 
+// TEXT
+Const TETRIS(8) As Word = (%1000100001000001,%1111101111011111,%1000100001000001,%0000000000000000,%1001101111011111,%1010100101010101,%1100101010010001,%0000000000000000)
+ 
+// NUMBERS
+Const Number_0(8) As Word = (%0000000000011110,%0000000000010010,%0000000000010010,%0000000000010010,%0000000000011110,%0000000000000000,%0000000000000000,%0000000000000000)
+Const Number_1(8) As Word = (%0000000000000100,%0000000000001100,%0000000000000100,%0000000000000100,%0000000000011110,%0000000000000000,%0000000000000000,%0000000000000000)
+Const Number_2(8) As Word = (%0000000000011110,%0000000000000010,%0000000000011110,%0000000000010000,%0000000000011110,%0000000000000000,%0000000000000000,%0000000000000000)
+Const Number_3(8) As Word = (%0000000000011110,%0000000000000010,%0000000000001110,%0000000000000010,%0000000000011110,%0000000000000000,%0000000000000000,%0000000000000000)
+Const Number_4(8) As Word = (%0000000000010010,%0000000000010010,%0000000000011110,%0000000000000010,%0000000000000010,%0000000000000000,%0000000000000000,%0000000000000000)
+Const Number_5(8) As Word = (%0000000000011110,%0000000000010000,%0000000000011110,%0000000000000010,%0000000000011110,%0000000000000000,%0000000000000000,%0000000000000000)
+Const Number_6(8) As Word = (%0000000000011110,%0000000000010000,%0000000000011110,%0000000000010010,%0000000000011110,%0000000000000000,%0000000000000000,%0000000000000000)
+Const Number_7(8) As Word = (%0000000000011110,%0000000000000010,%0000000000000100,%0000000000001000,%0000000000010000,%0000000000000000,%0000000000000000,%0000000000000000)
+Const Number_8(8) As Word = (%0000000000011110,%0000000000010010,%0000000000011110,%0000000000010010,%0000000000011110,%0000000000000000,%0000000000000000,%0000000000000000)
+Const Number_9(8) As Word = (%0000000000011110,%0000000000010010,%0000000000011110,%0000000000000010,%0000000000000010,%0000000000000000,%0000000000000000,%0000000000000000)
+ 
+Inline Sub Sleep()                // inline sub for SLEEP command
+    Asm
+        Sleep
+    End Asm
+End Sub
+ 
+Interrupt TMR2_Interrupt(2)
+    Save(0)                   // Back up system variables 
+ 
+    If TMR2IF = 1 Then        // Check if the interrupt was from TMR2
+        TMR2IF = 0            // Clear the TMR2 interrupt flag
+        // increment the mS variable
+        mS = mS + mS_Inc
+        If mS = 1000 Then
+            mS = 0            
+            sWDT = sWDT + 1
+            If sWDT = 30 Then
+                IDLEN = 1     // Put the PIC in RC_IDLE mode on SLEEP
+                SCS1 = 1      //                
+                SCS0 = 0      //
+                TRISA = $FF   // Make all I/Os high impedance inputs
+                TRISB = $FF
+                TRISC = $FF
+                TRISD = $FF                 
+                TMR2ON = 0    // Disable TMR2                               
+                // Configure oscillator for 31Khz
+                OSCCON = OSCCON And %10001111
+                Sleep
+            EndIf
+        EndIf
+ 
+        // Button Debounces
+        // Ensures the button has been activated before performing a debounce.
+        // Interrupt driven, the user has X mS between button presses.
+        // Prevents double presses and and minimize the chance of switch chatter.
+        // The sub routine 'CheckButtons' controls the state of various flags here.
+        // check if left button requires debounce
+        If Left_Debounce = 1 Then
+            If Left_Delay = 0 Then
+                If Left = 1 Then
+                    Left_Debounce = 0
+                EndIf
+            Else
+                Left_Delay = Left_Delay - mS_Inc        
+            EndIf    
+        EndIf 
+        // check if the right button requires debounce
+        If Right_Debounce = 1 Then
+            If Right_Delay = 0 Then
+                If Right = 1 Then
+                    Right_Debounce = 0
+                EndIf
+            Else
+                Right_Delay = Right_Delay - mS_Inc        
+            EndIf    
+        EndIf   
+        // check if the rotate button requires debounce
+        If Rotate_Debounce = 1 Then
+            If Rotate_Delay = 0 Then
+                If Rotate = 1 Then
+                    Rotate_Debounce = 0
+                EndIf
+            Else
+                Rotate_Delay = Rotate_Delay - mS_Inc        
+            EndIf    
+        EndIf 
+        // check if the down button requires debounce
+        If Down_Debounce = 1 Then
+            If Down_Delay = 0 Then
+                If Down = 1 Then
+                    Down_Debounce = 0
+                EndIf
+            Else
+                Down_Delay = Down_Delay - mS_Inc        
+            EndIf    
+        EndIf                   
+ 
+ 
+        // Event Handler - Object Drop
+        // Once every 800mS, a flag is set to initiate the next object drop.
+        // This is one of few classic features of tetris
+        If mS = 800 Then
+            DropObject = 1
+        End If
+ 
+ 
+        // Displays content on 64 LEDs via multiplexing    
+        // Ensure multiplexing is enabled.
+        // This is vital to protect shared variables such as ObjectData and BackgroundData.
+        // Whenever a write to either is done outside of the interrupt, multiplexing should be disabled.
+        If UpdateScreen = 1 Then        
+            // disable ALL x axis
+            PORTA = PORTA Or $0F
+            PORTB = PORTB Or $F0
+ 
+            // fill y axis 
+            PORTC = ObjectData(CurrentX).Byte0 Or BackgroundData(CurrentX).Byte0 
+            PORTD = ObjectData(CurrentX).Byte1 Or BackgroundData(CurrentX).Byte1
+ 
+            // enable ONE x axis (the correct one for current Y axis)
+            If CurrentX < 4 Then
+                PORTA.bits(CurrentX) = 0
+            Else
+                PORTB.bits(CurrentX) = 0        
+            EndIf
+ 
+            // increment x axis, ready for the next multiplex     
+            Inc(CurrentX)
+            If CurrentX = 8 Then
+                CurrentX = 0
+            EndIf
+ 
+            // a general purpose flag to inidcate the completion of an interrupt
+            InterruptComplete = 1
+        EndIf
+    EndIf
+    Restore
+End Interrupt
+ 
+// Loop until an interrupt occurs.
+// Useful for semaphores - allows shared resources to be used with little (no) impact on timing
+Sub WaitForInterrupt()
+    InterruptComplete = 0    
+    Repeat
+    Until InterruptComplete = 1
+End Sub
+ 
+// This is the primary semaphore routine. If the program uses shared resources, this routine is called.
+Sub PauseMultiplexing()
+    WaitForInterrupt
+    UpdateScreen = 0
+'    TMR2IE = 0
+End Sub
+ 
+// Enables multiplexing to resume
+Sub ResumeMultiplexing()
+'    TMR2IE = 1
+    UpdateScreen = 1
+End Sub
+ 
+// clears the passed array of type Word
+Sub ClearArray(ByRef pArray() As Word)
+    Dim i As Byte
+ 
+    For i = 0 To Bound(pArray)
+        pArray(i) = $0000
+    Next        
+End Sub
+ 
+// select a random object based on the number of objects defined
+Sub SelectNextObject(ByRef pTarget() As Word)
+    Dim RndSelection As Byte
+    Dim i As Byte
+    Dim Counter, Selection As Byte
+ 
+    // create a random number from 0-255
+    RndSelection = RandGen.Rand
+ 
+    // make a selection based on the random number created
+    Counter = 0
+    Selection = 0
+    Repeat
+        Counter = Counter + RndWindow
+        Selection = Selection + 1
+    Until Counter >= RndSelection
+ 
+    // initalise object variables
+    CurrentRotation = 0    
+ 
+    Select Selection
+        Case 1
+            For i = 0 To 7
+                pTarget(i) = Graphic0(i)
+            Next
+            OriginX = Graphic0_X
+            OriginY = Graphic0_Y   
+            LimitedRotation = LimitedRotation0         
+        Case 2
+            For i = 0 To 7
+                pTarget(i) = Graphic1(i)
+            Next
+            OriginX = Graphic1_X
+            OriginY = Graphic1_Y                     
+            LimitedRotation = LimitedRotation1         
+        Case 3
+            For i = 0 To 7
+                pTarget(i) = Graphic2(i)
+            Next
+            OriginX = Graphic2_X
+            OriginY = Graphic2_Y            
+            LimitedRotation = LimitedRotation2         
+        Case 4
+            For i = 0 To 7
+                pTarget(i) = Graphic3(i)
+            Next
+            OriginX = Graphic3_X
+            OriginY = Graphic3_Y                          
+            LimitedRotation = LimitedRotation3         
+        Case 5
+            For i = 0 To 7
+                pTarget(i) = Graphic4(i)
+            Next
+            OriginX = Graphic4_X
+            OriginY = Graphic4_Y                        
+            LimitedRotation = LimitedRotation4         
+        Case 6
+            For i = 0 To 7
+                pTarget(i) = Graphic5(i)
+            Next
+            OriginX = Graphic5_X
+            OriginY = Graphic5_Y            
+            LimitedRotation = LimitedRotation5         
+        Case 7
+            For i = 0 To 7
+                pTarget(i) = Graphic6(i)
+            Next
+            OriginX = Graphic6_X
+            OriginY = Graphic6_Y 
+            LimitedRotation = LimitedRotation6         
+       // else statement, just in case (prefer not to, but hey)           
+       Else         
+            For i = 0 To 7
+                pTarget(i) = Graphic0(i)
+            Next
+            OriginX = Graphic0_X
+            OriginY = Graphic0_Y            
+            LimitedRotation = LimitedRotation0         
+    End Select
+End Sub
+ 
+// Merge two arrays with the selected mode
+// 0 - Overwrite
+// 1 - Or
+Sub MergeObjects(ByRef pSource() As Word, ByRef pTarget() As Word, ByVal pMode As Byte)
+    Dim i As Byte
+    Dim tmpWord As Word
+ 
+    If pMode = 0 Then
+        For i = 0 To Bound(pSource)
+            pTarget(i) = pSource(i)
+        Next
+    ElseIf pMode = 1 Then
+        For i = 0 To Bound(pSource)
+            tmpWord = pTarget(i) Or pSource(i)
+            pTarget(i) = tmpWord
+        Next
+    EndIf
+End Sub
+ 
+// Move an objects y axis in pDirection
+// 0 - move object down
+// 1 - move object up
+Sub MoveObjectY(ByRef pObject() As Word, pDirection As Byte, ByVal pCycles As Byte)
+    Dim i,c As Byte
+    Select pDirection
+        Case 0
+            For c = 1 To pCycles
+                For i = 0 To Bound(pObject)
+                    pObject(i) = pObject(i) << 1
+                Next
+                OriginY = OriginY + 1
+            Next
+        Case 1
+            For c = 1 To pCycles        
+                For i = 0 To Bound(pObject)
+                    pObject(i) = pObject(i) >> 1
+                Next
+                OriginY = OriginY - 1            
+            Next
+    End Select            
+End Sub
+ 
+// Move an objects x axis in pDirection
+// 0 - move object right
+// 1 - move object left
+Sub MoveObjectX(ByRef pObject() As Word, pDirection As Byte)
+    Dim i As Byte
+ 
+    Select pDirection
+        Case 0
+            For i = 7 To 1 Step -1
+                pObject(i) = pObject(i-1)
+            Next
+            pObject(0) = 0
+            OriginX = OriginX + 1
+        Case 1
+            For i = 0 To 6
+                pObject(i) = pObject(i+1)
+            Next
+            pObject(7) = 0
+            OriginX = OriginX - 1        
+    End Select            
+End Sub
+ 
+ 
+// check the passed object to see if it has reached the bottom
+// return true if so
+Function CheckForBottom(ByRef pObject() As Word) As Byte
+    Dim i As Byte
+ 
+    Result = 0    
+    For i = 0 To Bound(pObject)
+        If pObject(i).Bits(15) = 1 Then
+            Result = 1
+        EndIf
+    Next    
+End Function
+ 
+// check the passed object to see if it is against the left wall already
+// return true if so
+Function CheckForLeftWall(ByRef pObject() As Word) As Byte
+    Result = 1    
+    If pObject(0) = 0 Then
+        Result = 0
+    EndIf
+End Function
+ 
+// check the passed object to see if it is against the right wall already
+// return true if so
+Function CheckForRightWall(ByRef pObject() As Word) As Byte
+    Result = 1    
+    If pObject(7) = 0 Then
+        Result = 0
+    EndIf
+End Function
+ 
+// compare the passed source and target for a collision
+// return true if so
+Function CollisionDetect(ByRef pSource() As Word, ByRef pTarget() As Word) As Byte
+    Dim i As Byte
+    Dim tmpWord As Word
+ 
+    Result = 0
+    For i = 0 To Bound(pSource)
+        tmpWord = pSource(i) And pTarget(i)
+        If tmpword > 0 Then
+            Result = 1
+            Break
+        EndIf
+    Next        
+End Function
+ 
+// An extremely quick way to rotate objects +90/-90 degrees. 
+//
+// Notes:
+// Work out the centre of the block (to be used as a pivot point), i.e. the centre of the block shape. Call that (px, py).
+// Each brick that makes up the block shape will rotate around that point. For each brick, you can apply the following calculation.
+// Where each brick's width and height is q, the brick's current location (of the upper left corner) is (x1, y1) and the new brick location is (x2, y2):
+// x2 = (y1 + px - py)
+// y2 = (px + py - x1 - q)
+// To rotate the opposite direction:
+// x2 = (px + py - y1 - q)
+// y2 = (x1 + py - px)
+//
+// Based on a 2D affine matrix transformation.
+Sub NewRotation(ByRef pSource() As Word, ByRef pTarget() As Word, ByVal pDirection As Byte)
+    Dim X2,Y2,Q,PX,PY As Integer    
+    Dim X1,Y1 As Byte
+ 
+    // check to see if rotations are disabled for current object
+    If LimitedRotation = 2 Then 
+        For X1 = 0 To 7
+            pTarget(X1) = pSource(X1)
+        Next        
+    Else
+        // define object origin
+        PX = OriginX
+        PY = OriginY
+        // define Q
+        Q = 0
+ 
+ 
+        // clear the target array
+        For X1 = 0 To 7
+            pTarget(X1) = 0
+        Next
+ 
+        // if the object is limited by rotation, then reverse
+        // rotations 1 & 3. This will make the object turn like so
+        // CW, CCW, CW, CCW
+        If LimitedRotation = 1 Then
+            If CurrentRotation = 1 Then
+                pDirection = CCW
+            EndIf
+        EndIf  
+        // analyse each pixel (working with 5x5 graphic)
+        For X1 = 0 To 7
+            For Y1 = 0 To 15
+                If pSource(X1).Bits(Y1) = 1 Then
+                    If pDirection = CW Then
+                        X2 = (PX + PY - Y1 - Q)
+                        Y2 = (X1 + PY - PX)                  
+                    Else           
+                        X2 = (Y1 + PX - PY)
+                        Y2 = (PX + PY - X1 - Q)
+                    EndIf
+                    If X2 >= 0 And X2 <= 7 Then
+                        If Y2 >= 0 And Y2 <= 15 Then
+                            pTarget(X2).Bits(Y2) = 1     //pDestinationObject(GetIndexY(Int(Y2)), GetIndexX(Int(X2))) = 1
+                        EndIf
+                    EndIf
+                End If
+            Next
+        Next 
+    EndIf
+End Sub
+ 
+// Count the number of pixels that equal "1". Standard bit-wise operators did not suit
+// this routine as pixels could very well end up ANYWHERE after a rotation.
+Function PixelCount(ByRef pSource() As Word) As Byte
+    Dim X,Y As Byte
+ 
+    Result = 0
+    For X = 0 To 7
+        For Y = 0 To 15
+            If pSource(X).Bits(Y) = 1 Then
+                Result = Result + 1
+            EndIf
+        Next
+    Next
+End Function
+ 
+// Drop the object by one Y increment. Return 0 if failed.
+Function MoveObjectDown(ByRef pObject() As Word) As Byte
+    Result = 1
+    // Semaphore, to protect shared variables
+    PauseMultiplexing  
+    // check for a collision with the bottom of the screen
+    If CheckForBottom(pObject) = 1 Then
+        // ... yes it has - time to save it there
+        Result = 0
+        // OR the object into the background
+        MergeObjects(pObject,BackgroundData,1)
+        // get a new object up-and-running
+        SelectNextObject(pObject) 
+        // check for new lines                
+        CheckForNewLines = 1                
+    Else    
+        // Move the object down          
+        MoveObjectY(pObject,0,1)
+        // check for a collision with the background
+        If CollisionDetect(pObject,BackgroundData) = 1 Then
+            // the object HIT something in the background. The object needs to be 
+            // moved BACK UP and saved to the background.
+            Result = 0
+            // move the object up one
+            MoveObjectY(pObject,1,1) 
+            // move the object to the background (OR it over)            
+            MergeObjects(pObject,BackgroundData,1)
+            // get a new object up-and-running
+            SelectNextObject(ObjectData) 
+            // check if the object has collided with the background already. If yes, then
+            // the game is over.                                  
+            If CollisionDetect(pObject,BackgroundData) = 1 Then
+                Result = 0
+                EndOfGame = 1
+            EndIf
+            // it's always possible that new lines may have been made already
+            CheckForNewLines = 1                
+        EndIf
+        // resume multiplexing, shared resources are done with
+    EndIf
+    ResumeMultiplexing            
+End Function
+ 
+// Check the state of each button. Because this routine is called often, the chances of missing a button press
+// are very unlikely. 
+Sub CheckButtons()
+    // check if left button pressed
+    If Left = 0 And Left_Debounce = 0 Then
+        // semaphore - shared variables are about to be accessed
+        PauseMultiplexing
+        // ensure the object is not ALREADY against the left wall
+        If CheckForLeftWall(ObjectData) = 0 Then
+            // move the object to a temporary buffer
+            MergeObjects(ObjectData,tmpObjectData,0)  
+            // Decrement the x axis             
+            MoveObjectX(tmpObjectData,1)            
+            // ensure no collisions with background
+            If CollisionDetect(tmpObjectData,BackgroundData) = 0 Then
+                // all went well, merge the array to the working buffer
+                MergeObjects(tmpObjectData,ObjectData,0)
+                // enable the debounce timer (prevents double presses etc)
+                Left_Delay = DebounceDelay
+                Left_Debounce = 1 
+                // always a chance that a new line was just made           
+                CheckForNewLines = 1                
+            EndIf            
+        EndIf
+        ResumeMultiplexing
+    EndIf 
+    // check if the right button is pressed
+    // NOTE: THESE COMMENTS ARE MUCH THE SAME AS ABOVE, excluded for that reason
+    If Right = 0 And Right_Debounce = 0 Then
+        // semaphore - shared variables are about to be accessed
+        PauseMultiplexing
+        // ensure not already on the right wall
+        If CheckForRightWall(ObjectData) = 0 Then            
+            MergeObjects(ObjectData,tmpObjectData,0)               
+            MoveObjectX(tmpObjectData,0)                        
+            // ensure no collisions with objects
+            If CollisionDetect(tmpObjectData,BackgroundData) = 0 Then
+                MergeObjects(tmpObjectData,ObjectData,0)
+                Right_Delay = DebounceDelay             
+                Right_Debounce = 1                    
+                CheckForNewLines = 1                
+            EndIf
+        EndIf
+        ResumeMultiplexing
+    EndIf 
+    // check if rotate button is pressed 
+    If Rotate = 0 And Rotate_Debounce = 0 Then
+        // semaphore - shared variables are about to be accessed
+        PauseMultiplexing  
+        // new rotation method, named accordingly, more info there
+        NewRotation(ObjectData,tmpObjectData,CW)
+        ResumeMultiplexing
+        // ensure nothing has fallen off due to near-wall rotations
+        If PixelCount(ObjectData) = PixelCount(tmpObjectData) Then
+            // check for object collision due to rotation            
+            If CollisionDetect(tmpObjectData,BackgroundData) = 0 Then
+                // FINALLY, if it gets here then ALL WENT WELL.
+                // Temp buffer merged with working buffer
+                PauseMultiplexing
+                MergeObjects(tmpObjectData,ObjectData,0)  
+                ResumeMultiplexing      
+                // update the current angle (0=0, 1=90, 2=180, 3=270)
+                CurrentRotation = CurrentRotation + 1
+                If CurrentRotation = 2 Then
+                    CurrentRotation = 0
+                EndIf                
+                Rotate_Delay = DebounceDelay
+                Rotate_Debounce = 1
+            EndIf
+        EndIf                   
+    EndIf        
+    // check if down is pressed               
+    If Down = 0 And Down_Debounce = 0 Then
+        Down_Delay = DebounceDelay        
+        Down_Debounce = 1               
+        // move the current object straight to the bottom     
+        Repeat
+        Until MoveObjectDown(ObjectData) = 0
+    EndIf          
+End Sub
+ 
+// remove the line at location pY
+Sub RemoveLine(ByRef pObject() As Word, ByRef pY As Byte)
+    Dim X,Y,CurrentLine As Byte
+ 
+    // shift each line down
+    For Y = pY-1 To 0 Step - 1
+        CurrentLine = Y+1
+        For X = 0 To 7            
+            pObject(X).Bits(CurrentLine) = pObject(X).Bits(Y)
+        Next
+    Next
+    // clear the top line
+    For X = 0 To 7
+        pObject(X).Bits(0) = 0
+    Next
+End Sub
+ 
+// remove COMPLETED lines & return the number of lines found
+Sub CheckForLines(ByRef pObject() As Word)
+    Dim X,Y,Pixels As Byte
+ 
+    For Y = 0 To 15
+        Pixels = 0
+        For X = 0 To 7
+            If pObject(X).Bits(Y) = 1 Then
+                Pixels = Pixels + 1
+            EndIf
+        Next
+        If Pixels = 8 Then
+            RemoveLine(pObject, Y)
+            NumberOfLines = NumberOfLines + 1
+        EndIf
+        Pixels = 0        
+    Next   
+End Sub
+ 
+// initialise TMR2
+Private Sub Initialise_TMR2()
+    TMR2ON = 0                // Disable TMR2
+    TMR2IE = 0                // Turn off TMR2 interrupts   
+    mS = 0                    // Initialise mS
+    PR2 = 199                 // TMR2 Period register PR2
+    T2CON = %00100011         // T2CON 0:1 = Prescale
+                              //        00 = Prescaler is 1:1
+                              //        01 = Prescaler is 1:4
+                              //        1x = Prescaler is 1:16                                 
+                              //      3:6 = Postscale              
+                              //     0000 = 1:1 postscale
+                              //     0001 = 1:2 postscale
+                              //     0010 = 1:3 postscale...
+                              //     1111 = 1:16 postscale
+ 
+    TMR2 = 0                  // Reset TMR2 Value   
+    TMR2IE = 1                // Enable TMR2 interrupts
+    TMR2ON = 1                // Enable TMR2 to increment  
+    Enable(TMR2_Interrupt)
+End Sub
+ 
+// initialise the program
+Sub InitialiseProgram()
+    // make all inputs digital
+    Utils.SetAllDigital
+ 
+    // configure I/O
+    TRISB = $0F
+    PORTB = $00
+    TRISC = $00
+    PORTC = $00
+    TRISD = $00
+    PORTD = $00
+    TRISA = $00
+    PORTA = $11    
+    // enable PORTB weakpullups
+    INTCON2.7 = 0    
+    // intialise variables
+    ClearArray(BackgroundData)
+    ClearArray(ObjectData)
+    OriginX = 0
+    OriginY = 0    
+    CurrentX = 0    
+    NumberOfLines = 0
+    mS = 0
+    // initialise events
+    DropObject = 0
+    EndOfGame = 0
+    CheckForNewLines = 0 
+    sWDT = 0
+ 
+    // initialise buttons
+    Left_Debounce = 0    
+    Left_Delay = 0
+    Right_Debounce = 0    
+    Right_Delay = 0
+    Rotate_Debounce = 0    
+    Rotate_Delay = 0
+    Down_Debounce = 0    
+    Down_Delay = 0
+End Sub
+ 
+Sub SplashScreen()
+    Dim i As Byte
+ 
+    // semaphore - shared variables are about to be accessed
+    PauseMultiplexing 
+ 
+    For i = 0 To 7
+        ObjectData(i) = TETRIS(i)
+    Next
+ 
+    ResumeMultiplexing
+ 
+    DelayMS(3500)    
+End Sub
+ 
+Sub GetNumber(ByRef pDigit As Byte, ByRef pTarget() As Word)
+    Dim i As Byte
+    Select pDigit
+        Case 0
+            For i = 0 To 7
+                pTarget(i) = Number_0(i)
+            Next
+        Case 1
+            For i = 0 To 7
+                pTarget(i) = Number_1(i)
+            Next
+        Case 2
+            For i = 0 To 7
+                pTarget(i) = Number_2(i)
+            Next
+        Case 3
+            For i = 0 To 7
+                pTarget(i) = Number_3(i)
+            Next
+        Case 4
+            For i = 0 To 7
+                pTarget(i) = Number_4(i)
+            Next
+        Case 5
+            For i = 0 To 7
+                pTarget(i) = Number_5(i)
+            Next
+        Case 6
+            For i = 0 To 7
+                pTarget(i) = Number_6(i)
+            Next
+        Case 7
+            For i = 0 To 7
+                pTarget(i) = Number_7(i)
+            Next
+        Case 8
+            For i = 0 To 7
+                pTarget(i) = Number_8(i)
+            Next
+        Case 9
+            For i = 0 To 7
+                pTarget(i) = Number_9(i)
+            Next
+    End Select            
+End Sub
+ 
+Sub ShowScore(ByRef pScore As Word)
+    Dim i As Byte
+    Dim CurrentNumber As Byte
+ 
+    // semaphore - shared variables are about to be accessed
+    PauseMultiplexing    
+ 
+    // clear all graphic buffers
+    ClearArray(tmpObjectData)
+    ClearArray(ObjectData)    
+    ClearArray(BackgroundData)    
+ 
+    For i = 1 To 3
+        CurrentNumber = Utils.Digit(pScore,i)        
+        GetNumber(CurrentNumber, tmpObjectData)
+        // shift the result down, depending on index        
+        Select i
+            Case 2
+                MoveObjectY(tmpObjectData,0,5)
+            Case 3
+                MoveObjectY(tmpObjectData,0,10)
+        End Select
+        // or result with graphic object
+        MergeObjects(tmpObjectData,ObjectData,1) 
+    Next
+ 
+    ResumeMultiplexing 
+ 
+    // wait for "down" button to be pressed
+ 
+    // perform button debounce
+    Repeat
+        DelayMS(10)    
+    Until Down = 1
+ 
+    // wait for button to be pressed
+    Repeat
+    Until Down = 0                  
+ 
+    // perform button debounce
+    Repeat
+        DelayMS(10)    
+    Until Down = 1             
+End Sub
+ 
+Sub ReadHighScore()
+    Dim tmpByte As Byte
+    Dim LastHighScore As Word
+ 
+    EE.Read(0,tmpByte)
+    If tmpByte = $77 Then
+        EE.Read(1,LastHighScore)
+        ShowScore(LastHighScore)
+    Else        
+        LastHighScore = 0
+        EE.Write(0,$77,LastHighScore)
+        ShowScore(LastHighScore)
+    EndIf
+End Sub
+ 
+Sub WriteHighScore()
+    Dim LastHighScore As Word
+ 
+    EE.Read(1,LastHighScore)
+    If NumberOfLines > LastHighScore Then
+        EE.Write(1,NumberOfLines)
+    EndIf
+End Sub
+ 
+// this is the main game loop for Tetris
+Sub MainGameLoop()
+    // initialise screen and variables
+    InitialiseProgram
+ 
+    // enable screen multiplexing & other timer functions
+    UpdateScreen = 1    
+    Initialise_TMR2    
+ 
+    // display the flash screen
+    SplashScreen
+ 
+    // Show last high score from EEPROM
+    ReadHighScore
+ 
+    // re-initialise screen and variables (splash screen and highscores may have altered stuff..)
+    PauseMultiplexing
+    InitialiseProgram    
+    Initialise_TMR2
+    ResumeMultiplexing
+ 
+    // select an object and place it in ObjectData
+    SelectNextObject(ObjectData)
+ 
+    Repeat
+        // check if drop object flag has been set (invoked occurs by the interrupt "TimerObjectDrop")
+        If DropObject = 1 Then
+            DropObject = 0
+            MoveObjectDown(ObjectData)
+        EndIf
+        // check for completed lines. any routine that moves an object should enable this flag. 
+        If CheckForNewLines = 1 Then
+            CheckForLines(BackgroundData)
+        EndIf
+        // scan buttons and action as necessary
+        CheckButtons()
+        // reset software watch dog timer
+        sWDT = 0
+    // loop forever, or until the EndOfGame event is set true
+    Until EndOfGame = 1
+ 
+    // write the high score to EEPROM
+    WriteHighScore()    
+    // display the score!
+    ShowScore(NumberOfLines)
+End Sub
+ 
+ 
+// main program start
+ 
+// seed randgen module
+RandGen.Initialize($77)    
+ 
+While True
+    // enter main game program, will stay there until an END event occurs
+    MainGameLoop
+Wend
